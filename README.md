@@ -25,6 +25,3 @@ O código utiliza o `PropertiesService` do Google para garantir que chaves de AP
 2. Copie o arquivo `Código.gs` deste repositório e cole no editor.
 3. Cadastre as variáveis acima nas Propriedades do Script.
 4. Crie os acionadores (Triggers) para os horários que deseja receber o briefing (ex: 07:30, 12:45, 18:30).
-
-## Licença
-Este projeto está sob a licença MIT. Sinta-se à vontade para clonar, compartilhar e adaptar ao seu fluxo de trabalho.
