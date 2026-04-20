@@ -1,27 +1,32 @@
-# Assistente Executivo com IA (Google Apps Script + Gemini)
+AI Executive Assistant (Google Apps Script + Gemini API)
+This project automates the creation of daily executive briefings by integrating the Google Workspace ecosystem (Calendar, Gmail, and Drive) with generative AI via the Gemini API (Google AI Studio).
 
-Este projeto automatiza a criação de briefings executivos diários, integrando o Google Agenda e o Gmail com a inteligência artificial do Gemini (Google).
+Features
+Calendar Briefing: Lists today's and tomorrow's appointments, including schedules and attendees.
+Email Summarization: Parses unread threads in the Inbox, grouping them by project or topic and highlighting action items.
+Obsidian Integration (Google Drive): Recursively scans directories and subdirectories in Google Drive to read .md files, consolidating project statuses and management notes.
+VIP Priority: Identifies critical senders via a whitelist and prioritizes them at the top of the briefing.
+Google Chat Alerts: Asynchronous webhook notifications triggered when VIP emails are detected.
+Network Resilience (Exponential Backoff): Intelligent retry mechanism to handle temporary API instability or rate limiting (HTTP 429/503) from the Gemini API.
+Smart Execution & Routing: Detects weekends to save compute resources and adjusts the data extraction payload based on the time of day (comprehensive briefings in the morning, concise summaries in the afternoon/evening).
+Secure Configuration
 
-## Funcionalidades
-- **Resumo de Agenda:** Lista compromissos do dia com horários e participantes.
-- **Resumo de E-mails:** Analisa e-mails não lidos, agrupando por projeto/tema.
-- **Prioridade VIP:** Identifica remetentes importantes e os destaca no topo.
-- **Alertas via Google Chat:** Notificações em tempo real no celular via Webhook.
-- **Formatação Profissional:** Saída em HTML limpo, sem emojis, focada em produtividade.
-- **Execução Inteligente:** O script detecta automaticamente finais de semana e não envia e-mails, mas permite bypass se executado manualmente via editor para facilitar testes.
+The codebase leverages Google Apps Script's PropertiesService to prevent hardcoding API keys, emails, and sensitive data in the source code. You must configure the following environment variables in your Script Properties (Project Settings).
+Required Environment Variables:
+API_KEY: Your Google AI Studio (Gemini) API Key.
+EMAIL_DESTINO: Target email address to receive the HTML briefings.
+NOME_USUARIO: Your full name, injected into the LLM prompt for context.
+WEBHOOK_CHAT: (Optional) Google Chat webhook URL for VIP alerts.
+LISTA_VIP: Comma-separated list of priority domains or emails (e.g., @company.com, ceo@gmail.com).
+DIAS_HISTORICO: Lookback period for email processing (e.g., 3d).
+PASTAS_OBSIDIAN: Comma-separated Google Drive root folder IDs containing your .md files.
 
-## Configuração Segura
-O código utiliza o `PropertiesService` do Google para garantir que chaves de API e dados sensíveis não fiquem expostos no código-fonte. Você precisará adicionar as variáveis abaixo nas **Propriedades do Script** (Configurações do Projeto ⚙️).
+Installation and Usage
+Create a new project in Google Apps Script.
+Copy the contents of Código.gs from this repository into the editor.
+Set up all the environment variables listed above in the Script Properties.
+Authorization: Run the gerarResumoDiario function manually for the first time. Google will prompt you to authorize the script's access to your Gmail, Calendar, and Drive.
+Set up time-driven Triggers for your preferred briefing schedules (e.g., 07:30, 12:45, 18:30).
 
-### Variáveis Necessárias:
-1. `API_KEY`: Sua chave de API do Google AI Studio (Gemini).
-2. `WEBHOOK_CHAT`: URL do Webhook do seu espaço no Google Chat.
-3. `EMAIL_DESTINO`: Endereço de e-mail que receberá os resumos.
-4. `LISTA_VIP`: Lista de domínios ou e-mails separados por vírgula (ex: `@empresa.com, chefe@gmail.com`).
-5. `DIAS_HISTORICO`: Período de busca de e-mails para processamento (ex: `3d`).
-
-## Instalação
-1. Crie um novo projeto no [Google Apps Script](https://script.google.com/).
-2. Copie o arquivo `Código.gs` deste repositório e cole no editor.
-3. Cadastre as variáveis acima nas Propriedades do Script.
-4. Crie os acionadores (Triggers) para os horários que deseja receber o briefing (ex: 07:30, 12:45, 18:30).
+License
+Distributed under the License. See the LICENSE file for more information.
