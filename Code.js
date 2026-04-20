@@ -1,80 +1,156 @@
 /**
- * ASSISTENTE EXECUTIVO - GMAIL + AGENDA + GEMINI AI
- * Este script realiza a leitura da agenda do dia e dos e-mails não lidos,
- * gerando um resumo estruturado via IA e enviando alertas para o Google Chat.
+ * @fileoverview EXECUTIVE ASSISTANT - Gmail, Calendar, Drive (Obsidian) and Gemini AI Integration.
+ * @description Automation pipeline for data extraction and executive briefing generation.
+ * Implements recursive directory scanning and advanced telemetry logs.
  */
 
 const props = PropertiesService.getScriptProperties();
+
+// Environment variables initialization with explicit conditional logic (Senior Clean Code)
+let listaVipBruta = props.getProperty('LISTA_VIP');
+let listaVipArray = [];
+
+if (listaVipBruta) {
+  listaVipArray = listaVipBruta.split(',').map(item => item.trim()).filter(String);
+}
+
+let diasHistorico = props.getProperty('DIAS_HISTORICO');
+if (!diasHistorico) {
+  diasHistorico = '3d';
+}
+
+let pastasObsidian = props.getProperty('PASTAS_OBSIDIAN');
+if (!pastasObsidian) {
+  pastasObsidian = '';
+}
+
+let nomeUsuario = props.getProperty('NOME_USUARIO');
+if (!nomeUsuario) {
+  nomeUsuario = 'Usuário Executivo';
+}
 
 const CONFIG = {
   API_KEY: props.getProperty('API_KEY'),
   WEBHOOK_CHAT: props.getProperty('WEBHOOK_CHAT'),
   EMAIL_DESTINO: props.getProperty('EMAIL_DESTINO'),
-  LISTA_VIP: props.getProperty('LISTA_VIP') ? props.getProperty('LISTA_VIP').split(',').map(item => item.trim()) : [],
-  DIAS_HISTORICO: props.getProperty('DIAS_HISTORICO') || '3d'
+  NOME_USUARIO: nomeUsuario,
+  LISTA_VIP: listaVipArray,
+  DIAS_HISTORICO: diasHistorico,
+  PASTAS_OBSIDIAN: pastasObsidian
 };
 
 /**
- * Função Principal (Orquestradora)
- * @param {Object} e - Objeto de evento passado automaticamente pelos acionadores.
+ * Script entrypoint. Orchestrates the collection, processing, and delivery flow.
  */
 function gerarResumoDiario(e) {
-  const agora = new Date();
+  Logger.log('[SYSTEM] ==========================================');
+  Logger.log('[SYSTEM] Starting Executive Assistant execution');
   
-  // Verifica se a execução é MANUAL (e será undefined) ou via ACIONADOR (e terá conteúdo)
+  const agora = new Date();
+  const hora = agora.getHours();
   const isExecucaoManual = (typeof e === 'undefined');
 
-  // Bloqueia o fim de semana apenas se NÃO for execução manual
+  let periodo = "Manhã";
+  if (hora >= 12 && hora < 18) {
+    periodo = "Tarde";
+  } else if (hora >= 18) {
+    periodo = "Noite";
+  }
+
+  Logger.log(`[ROUTING] Period detected: ${periodo}. Manual execution: ${isExecucaoManual}`);
+
   if (!isExecucaoManual && isFinalDeSemana(agora)) {
-    Logger.log('Execução via acionador detectada no fim de semana. Abortando para respeitar o descanso.');
+    Logger.log('[ROUTING] Execution aborted: Weekend detected.');
     return;
   }
 
-  if (isExecucaoManual) {
-    Logger.log('Execução MANUAL detectada. Ignorando trava de fim de semana para testes...');
-  } else {
-    Logger.log('Execução via ACIONADOR detectada. Iniciando processamento normal...');
-  }
+  let textoAgenda = "";
+  let dadosObsidian = "";
 
-  const textoAgenda = getBriefingAgenda(agora);
+  if (periodo === "Manhã") {
+    Logger.log('[ROUTING] Starting morning data extraction (Calendar and Obsidian)...');
+    textoAgenda = getBriefingAgenda(agora);
+    dadosObsidian = getDadosObsidian(CONFIG.PASTAS_OBSIDIAN);
+  } else {
+    Logger.log('[ROUTING] Skipping Calendar and Obsidian (non-morning period).');
+  }
+  
   const dadosEmails = getDadosEmails(CONFIG.DIAS_HISTORICO);
 
-  if (!textoAgenda && !dadosEmails.textoParaResumir) {
-    Logger.log('Nenhuma atividade encontrada.');
+  if (!textoAgenda && !dadosEmails.textoParaResumir && !dadosObsidian) {
+    Logger.log('[SYSTEM] Pipeline terminated: No data captured in any module.');
     return;
   }
 
-  const prompt = montarPrompt(textoAgenda, dadosEmails.textoParaResumir);
+  Logger.log('[PROMPT] Building payload for LLM submission...');
+  const prompt = montarPrompt(textoAgenda, dadosEmails, dadosObsidian, periodo);
+  
+  Logger.log('[GEMINI_API] Starting external request...');
   const resumoHTML = chamarGeminiAPI(prompt);
 
   if (resumoHTML) {
+    Logger.log('[SYSTEM] HTML response received successfully. Starting sanitization and dispatch.');
     const htmlLimpo = limparFormatacaoMarkdown(resumoHTML);
     enviarEmail(htmlLimpo, agora);
     
     if (dadosEmails.vipsEncontrados > 0) {
       notificarVIPNoChat(dadosEmails.vipsEncontrados, dadosEmails.resumoVipChat);
     }
+    Logger.log('[SYSTEM] Execution completed successfully.');
+    Logger.log('[SYSTEM] ==========================================');
+  } else {
+    Logger.log('[SYSTEM] General failure: LLM did not return valid HTML.');
   }
 }
 
+/**
+ * Collects calendar events for today and tomorrow.
+ */
 function getBriefingAgenda(data) {
-  const eventos = CalendarApp.getEventsForDay(data);
-  if (eventos.length === 0) return "Nenhum compromisso agendado.";
-
-  return eventos.map(evento => {
+  Logger.log('[CALENDAR] Collecting appointments...');
+  const formatarEvento = (evento) => {
     const titulo = evento.getTitle();
     const convidados = evento.getGuestList().map(g => g.getName() || g.getEmail()).join(", ");
-    const strConvidados = convidados ? ` | Participantes: ${convidados}` : "";
+    
+    let strConvidados = "";
+    if (convidados) {
+      strConvidados = ` | Participantes: ${convidados}`;
+    }
+    
     const inicio = Utilities.formatDate(evento.getStartTime(), Session.getScriptTimeZone(), "HH:mm");
     const fim = Utilities.formatDate(evento.getEndTime(), Session.getScriptTimeZone(), "HH:mm");
     
-    return evento.isAllDayEvent() ? 
-      `- O dia todo: ${titulo}${strConvidados}` : 
-      `- ${inicio} as ${fim}: ${titulo}${strConvidados}`;
-  }).join("\n");
+    if (evento.isAllDayEvent()) {
+      return `- Dia todo: ${titulo}${strConvidados}`;
+    } else {
+      return `- ${inicio} até ${fim}: ${titulo}${strConvidados}`;
+    }
+  };
+
+  const eventosHoje = CalendarApp.getEventsForDay(data);
+  let textoHoje = "Nenhum compromisso agendado para hoje.";
+  if (eventosHoje.length > 0) {
+    textoHoje = eventosHoje.map(formatarEvento).join("\n");
+  }
+
+  const dataAmanha = new Date(data);
+  dataAmanha.setDate(dataAmanha.getDate() + 1);
+  const eventosAmanha = CalendarApp.getEventsForDay(dataAmanha);
+  
+  let textoAmanha = "Nenhum compromisso agendado para amanhã.";
+  if (eventosAmanha.length > 0) {
+    textoAmanha = eventosAmanha.map(formatarEvento).join("\n");
+  }
+
+  Logger.log(`[CALENDAR] Found ${eventosHoje.length} appointments for today and ${eventosAmanha.length} for tomorrow.`);
+  return `--- HOJE ---\n${textoHoje}\n\n--- AMANHÃ ---\n${textoAmanha}`;
 }
 
+/**
+ * Scans Inbox for unread emails and identifies VIP senders based on whitelist.
+ */
 function getDadosEmails(periodo) {
+  Logger.log(`[GMAIL] Searching for unread emails from the last ${periodo}...`);
   const threads = GmailApp.search(`is:unread in:inbox newer_than:${periodo}`);
   let dados = { textoParaResumir: "", vipsEncontrados: 0, resumoVipChat: "" };
 
@@ -91,32 +167,120 @@ function getDadosEmails(periodo) {
       dados.resumoVipChat += `- De: ${remetente}\n- Assunto: ${assunto}\n\n`;
     }
 
-    const tagVip = ehVip ? " [ATENCAO: REMETENTE VIP] " : "";
-    dados.textoParaResumir += `De:${tagVip} ${remetente}\nAssunto: ${assunto}\nMensagem: ${corpo}\n\n---\n\n`;
+    let tagVip = "";
+    if (ehVip) {
+      tagVip = " [ATENÇÃO: VIP] ";
+    }
+    
+    dados.textoParaResumir += `Remetente:${tagVip} ${remetente}\nAssunto: ${assunto}\nMensagem: ${corpo}\n\n---\n\n`;
   });
 
+  Logger.log(`[GMAIL] Search ended: ${threads.length} threads processed. ${dados.vipsEncontrados} VIPs identified.`);
   return dados;
 }
 
-function montarPrompt(agenda, emails) {
-  return `Voce e um assessor executivo de alta performance do Vinicius Oliveira. 
-  Analise os dados abaixo com precisao.
+/**
+ * Scans configured folders and starts the recursive extraction process of .md files.
+ */
+function getDadosObsidian(pastasIdsStr) {
+  if (!pastasIdsStr) {
+    Logger.log('[OBSIDIAN] No folder configured. Skipping module.');
+    return "";
+  }
+  
+  Logger.log('[OBSIDIAN] Starting recursive directory scan...');
+  const ids = pastasIdsStr.split(',').map(id => id.trim()).filter(String);
+  let conteudoAcumulado = "";
 
-  REGRAS CRITICAS:
-  1. ZERO ALUCINACAO: Baseie-se apenas nos dados fornecidos.
-  2. ZERO EMOJIS: Use formatacao profissional.
-  3. NOMES COMPLETOS: Use nome e sobrenome dos envolvidos para evitar ambiguidades.
+  ids.forEach(id => {
+    try {
+      const pastaRaiz = DriveApp.getFolderById(id);
+      Logger.log(`[OBSIDIAN] Accessing root folder: ${pastaRaiz.getName()}`);
+      conteudoAcumulado += extrairDadosRecursivamente(pastaRaiz);
+    } catch (e) {
+      Logger.log(`[OBSIDIAN_ERROR] Failed to access folder ID: ${id}. Detail: ${e}`);
+    }
+  });
 
-  ESTRUTURA HTML:
-  - <h2> BRIEFING DA AGENDA DE HOJE
-  - <h2> PRIORIDADES VIP (Use tag <span style="color:red; font-weight:bold;">[URGENTE]</span> se necessario)
-  - <h2> OUTROS ASSUNTOS E PROJETOS (Agrupe por tema, coloque <span style="color:red; font-weight:bold;">[URGENTE]</span> na mesma linha do h3 se critico)
-
-  DADOS:
-  AGENDA:\n${agenda}
-  EMAILS:\n${emails}`;
+  return conteudoAcumulado;
 }
 
+/**
+ * Helper Func: Implements Depth-First Search (DFS) to read files in subfolders.
+ */
+function extrairDadosRecursivamente(pasta) {
+  let resultado = `\n--- CONTEXTO: ${pasta.getName()} ---\n`;
+  let arquivosLidos = 0;
+  
+  const arquivos = pasta.getFiles();
+  while (arquivos.hasNext()) {
+    const arquivo = arquivos.next();
+    const nomeArquivo = arquivo.getName().toLowerCase();
+    
+    if (nomeArquivo.endsWith('.md')) {
+      arquivosLidos++;
+      const conteudo = arquivo.getBlob().getDataAsString("UTF-8");
+      const limiteTexto = conteudo.substring(0, 2500); 
+      resultado += `\n[ARQUIVO: ${arquivo.getName()}]\n${limiteTexto}\n`;
+    }
+  }
+  
+  if (arquivosLidos > 0) {
+    Logger.log(`[OBSIDIAN] Extracted ${arquivosLidos} MD files from folder: ${pasta.getName()}`);
+  }
+  
+  const subpastas = pasta.getFolders();
+  while (subpastas.hasNext()) {
+    resultado += extrairDadosRecursivamente(subpastas.next());
+  }
+  
+  return resultado;
+}
+
+/**
+ * Builds the structured prompt for the LLM.
+ * Note: The prompt output text remains in Portuguese to instruct the LLM correctly.
+ */
+function montarPrompt(agenda, dadosEmails, dadosObsidian, periodo) {
+  const isManha = (periodo === "Manhã");
+
+  let instrucaoVIP = `STATUS: Não há e-mails de remetentes VIP.`;
+  if (dadosEmails.vipsEncontrados > 0) {
+    instrucaoVIP = `<h2> 2. PRIORIDADES VIP </h2>
+       Analise detalhadamente os e-mails VIP: Contexto, Solicitação e Ação Imediata.`;
+  }
+
+  let seccoesExtras = "";
+  let dataPayload = "";
+
+  if (isManha) {
+    seccoesExtras = `
+      <h2> 1. BRIEFING DA AGENDA </h2>
+      <p>Apresente os compromissos de hoje e amanhã de forma clara.</p>
+
+      <h2> 4. PLANEJAMENTO E PROJETOS (OBSIDIAN) </h2>
+      <p><strong>Visão Estratégica:</strong> Consolide os dados dos cartões MD das pastas e subpastas. Resuma o status dos projetos ativos e planos de gestão.</p>
+    `;
+    dataPayload = `AGENDA:\n${agenda}\nOBSIDIAN:\n${dadosObsidian}\n`;
+  }
+
+  return `Você é o assessor executivo de ${CONFIG.NOME_USUARIO}. Gere o resumo para o período: ${periodo}.
+  REGRAS: Retorne apenas HTML válido, sem emojis, use nomes completos.
+
+  ${seccoesExtras}
+
+  ${instrucaoVIP}
+
+  <h2> 3. E-MAILS E ASSUNTOS GERAIS </h2>
+  [Resuma por tema. Se for Tarde/Noite, seja ultra direto. Use tag <span style="color:red; font-weight:bold;">[URGENTE]</span> se necessário.]
+
+  DADOS:\n${dataPayload}EMAILS:\n${dadosEmails.textoParaResumir}`;
+}
+
+/**
+ * Communication with Gemini API. 
+ * Implements 5 spaced Retry attempts (15s, 30s, 45s, 60s, 75s) to respect Google's timeout limits.
+ */
 function chamarGeminiAPI(prompt) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${CONFIG.API_KEY}`;
   const payload = { contents: [{ parts: [{ text: prompt }] }] };
@@ -127,37 +291,97 @@ function chamarGeminiAPI(prompt) {
     muteHttpExceptions: true
   };
 
+  const maxTentativas = 5;
+  
+  for (let t = 1; t <= maxTentativas; t++) {
+    try {
+      const response = UrlFetchApp.fetch(url, options);
+      const code = response.getResponseCode();
+      const body = response.getContentText();
+      
+      if (code === 200) {
+        const json = JSON.parse(body);
+        if (json.candidates && json.candidates.length > 0) {
+          Logger.log(`[GEMINI_API] Request successful. Attempt: ${t}/${maxTentativas}.`);
+          return json.candidates[0].content.parts[0].text;
+        }
+      } else if (code === 503 || code === 429) {
+         const delay = t * 15000; 
+         Logger.log(`[GEMINI_API] High traffic (HTTP ${code}). Attempt ${t} failed. Waiting ${delay/1000}s...`);
+         Utilities.sleep(delay);
+      } else {
+        Logger.log(`[GEMINI_API_ERROR] Structural or permission error (HTTP ${code}): ${body}`);
+        break; 
+      }
+    } catch (err) {
+      Logger.log(`[GEMINI_API_ERROR] Connection failure on attempt ${t}: ${err}`);
+      Utilities.sleep(15000); 
+    }
+  }
+  
+  Logger.log("[GEMINI_API] Attempts exhausted. Returning Null.");
+  return null;
+}
+
+/**
+ * Sends the formatted briefing via GmailApp.
+ */
+function enviarEmail(html, data) {
+  Logger.log('[GMAIL_OUTBOX] Preparing outgoing email...');
+  const hora = data.getHours();
+  let p = "Manhã";
+  if (hora >= 12 && hora < 18) p = "Tarde";
+  if (hora >= 18) p = "Noite";
+  
+  const dataFmt = Utilities.formatDate(data, Session.getScriptTimeZone(), "dd/MM/yyyy");
+  
+  const template = `
+    <div style="font-family: 'Segoe UI', Arial, sans-serif; color: #333; line-height: 1.6;">
+      ${html}
+      <hr style="border: 0; border-top: 1px solid #eee; margin-top: 30px;">
+      <p style="font-size: 11px; color: #999;">Automated Executive Briefing System | AI Integration</p>
+    </div>
+  `;
+  
   try {
-    const response = UrlFetchApp.fetch(url, options);
-    const json = JSON.parse(response.getContentText());
-    return json.candidates[0].content.parts[0].text;
+    GmailApp.sendEmail(CONFIG.EMAIL_DESTINO, `Resumo Executivo - ${p} (${dataFmt})`, "", { htmlBody: template });
+    Logger.log('[GMAIL_OUTBOX] Email sent successfully.');
   } catch (e) {
-    Logger.log(`Erro API Gemini: ${e}`);
-    return null;
+    Logger.log(`[GMAIL_OUTBOX_ERROR] Falha crítica ao enviar o e-mail: ${e.message}`);
   }
 }
 
-function enviarEmail(html, data) {
-  const hora = data.getHours();
-  const periodo = hora < 12 ? "Manha" : (hora < 18 ? "Tarde" : "Noite");
-  const dataFmt = Utilities.formatDate(data, Session.getScriptTimeZone(), "dd/MM/yyyy");
-  
-  GmailApp.sendEmail(CONFIG.EMAIL_DESTINO, `Resumo Executivo - ${periodo} (${dataFmt})`, "", { htmlBody: html });
-}
-
+/**
+ * Sends VIP email alerts to Google Chat via Webhook.
+ */
 function notificarVIPNoChat(qtd, resumo) {
-  if (!CONFIG.WEBHOOK_CHAT) return;
-  const payload = { text: `*ATENCAO: ${qtd} E-MAIL(S) VIP IDENTIFICADO(S)*\n\n${resumo}Verifique o e-mail para detalhes.` };
+  if (!CONFIG.WEBHOOK_CHAT) {
+    Logger.log('[NOTIFICATION] Webhook not configured. Skipping Chat alert.');
+    return;
+  }
+  
+  Logger.log(`[NOTIFICATION] Triggering alert for ${qtd} VIPs via Webhook...`);
+  const body = { text: `*ALERTA VIP: ${qtd} NOVA(S) MENSAGEM(NS)*\n\n${resumo}` };
   UrlFetchApp.fetch(CONFIG.WEBHOOK_CHAT, {
-    method: "post", contentType: "application/json", payload: JSON.stringify(payload)
+    method: "post", contentType: "application/json", payload: JSON.stringify(body)
   });
+  Logger.log('[NOTIFICATION] Alert triggered in Chat successfully.');
 }
 
-function isFinalDeSemana(data) {
-  const dia = data.getDay();
-  return (dia === 0 || dia === 6);
+/**
+ * Helper Func: Checks if a given date falls on a weekend.
+ */
+function isFinalDeSemana(d) {
+  const s = d.getDay();
+  if (s === 0 || s === 6) {
+    return true;
+  }
+  return false;
 }
 
-function limparFormatacaoMarkdown(texto) {
-  return texto.replace(/```html/g, "").replace(/```/g, "").trim();
+/**
+ * Helper Func: Removes Markdown code block syntax from the LLM output.
+ */
+function limparFormatacaoMarkdown(t) {
+  return t.replace(/```html/g, "").replace(/```/g, "").trim();
 }
